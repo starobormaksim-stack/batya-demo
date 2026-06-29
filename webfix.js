@@ -21,10 +21,13 @@ if ('serviceWorker' in navigator) {
 }
 
 // 2) Разблокировка звука: браузеры (особенно iOS Safari) держат AudioContext «suspended»
-//    до реального касания. Перехватываем все создаваемые AudioContext и возобновляем их
-//    на КАЖДОЕ касание/клик/клавишу — Godot на iOS не всегда делает это сам.
+//    до реального касания. Перехватываем все создаваемые AudioContext и на КАЖДОЕ касание:
+//    (а) resume(); (б) проигрываем КОРОТКИЙ ТИХИЙ БУФЕР через контекст — на iOS без этого
+//    «кика» звук остаётся выключенным даже после resume(). Godot на iOS сам это не делает.
+//    ВАЖНО: если звук всё равно молчит на iPhone — проверь физический переключатель
+//    «без звука» (тихий режим) сбоку телефона: он глушит веб-аудио в Safari.
 (function () {
-	var ACs = [], Orig = window.AudioContext || window.webkitAudioContext;
+	var ACs = [], kicked = [], Orig = window.AudioContext || window.webkitAudioContext;
 	if (Orig) {
 		function P() { var c = new Orig(...arguments); ACs.push(c); return c; }
 		P.prototype = Orig.prototype;
@@ -32,12 +35,24 @@ if ('serviceWorker' in navigator) {
 		window.webkitAudioContext = P;
 	}
 	window.__acs = ACs;
-	function resume() {
-		for (var i = 0; i < ACs.length; i++) {
-			try { if (ACs[i].state !== 'running') ACs[i].resume(); } catch (e) {}
-		}
+	window.__audioKicked = false;
+	function kickOne(c) {
+		try { if (c.state !== 'running') c.resume(); } catch (e) {}
+		if (kicked.indexOf(c) !== -1) return;
+		try {
+			var b = c.createBuffer(1, 1, c.sampleRate || 22050);
+			var s = c.createBufferSource();
+			s.buffer = b;
+			s.connect(c.destination);
+			if (s.start) { s.start(0); } else if (s.noteOn) { s.noteOn(0); }
+			kicked.push(c);
+			window.__audioKicked = true;
+		} catch (e) {}
+	}
+	function unlock() {
+		for (var i = 0; i < ACs.length; i++) { kickOne(ACs[i]); }
 	}
 	['touchstart', 'touchend', 'pointerdown', 'mousedown', 'keydown', 'click'].forEach(function (e) {
-		window.addEventListener(e, resume, { capture: true, passive: true });
+		window.addEventListener(e, unlock, { capture: true, passive: true });
 	});
 })();
