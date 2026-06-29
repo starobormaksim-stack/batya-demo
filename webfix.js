@@ -56,3 +56,68 @@ if ('serviceWorker' in navigator) {
 		window.addEventListener(e, unlock, { capture: true, passive: true });
 	});
 })();
+
+// 3) ЗВУК ПРИРОДЫ через Web Audio напрямую (обход сломанного веб-аудио Godot).
+//    В этой сборке движок Godot НЕ выдаёт звук в браузер (проверено: его микс молчит,
+//    хотя проигрывание идёт). При этом сам Web Audio в браузере рабочий. Поэтому
+//    атмосферу (птицы + костёр) проигрываем сами: декодируем mp3 на том же AudioContext
+//    и зацикленно играем на первое касание. Гарантированный звук на телефоне.
+(function () {
+	var Ctor = window.AudioContext || window.webkitAudioContext;
+	if (!Ctor) return;
+	var started = false;
+	window.__ambient = [];
+	window.__ambientGain = null;
+
+	function getCtx() {
+		if (window.__acs && window.__acs[0]) return window.__acs[0];
+		var c = new Ctor();
+		window.__acs.push(c);
+		return c;
+	}
+
+	function playLoop(ctx, url, gain, master) {
+		fetch(url).then(function (r) { return r.arrayBuffer(); })
+			.then(function (data) { return ctx.decodeAudioData(data); })
+			.then(function (buffer) {
+				var src = ctx.createBufferSource();
+				src.buffer = buffer;
+				src.loop = true;
+				var g = ctx.createGain();
+				g.gain.value = gain;
+				src.connect(g);
+				g.connect(master);
+				src.start(0);
+				window.__ambient.push(src);
+			})
+			.catch(function (e) { console.error('[ambient] ' + url, e); });
+	}
+
+	function startAmbient() {
+		if (started) return;
+		started = true;
+		var ctx = getCtx();
+		if (ctx.state !== 'running') { try { ctx.resume(); } catch (e) {} }
+		// Общий выход атмосферы + анализатор для самопроверки уровня.
+		var master = ctx.createGain();
+		master.gain.value = 1.0;
+		var an = ctx.createAnalyser();
+		an.fftSize = 256;
+		master.connect(an);
+		an.connect(ctx.destination);
+		window.__ambientGain = master;
+		window.__ambientLevel = function () {
+			var buf = new Uint8Array(an.fftSize);
+			an.getByteTimeDomainData(buf);
+			var s = 0;
+			for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; s += v * v; }
+			return Math.sqrt(s / buf.length);
+		};
+		playLoop(ctx, 'birds.mp3', 0.5, master);
+		playLoop(ctx, 'bonfire.mp3', 0.8, master);
+	}
+
+	['touchend', 'pointerdown', 'mousedown', 'click', 'keydown'].forEach(function (e) {
+		window.addEventListener(e, startAmbient, { capture: true, passive: true });
+	});
+})();
